@@ -270,6 +270,7 @@ def load_normalized_state(connection):
         "secondPensionDateOfBirth": household["second_pension_date_of_birth"] if household else cached.get("secondPensionDateOfBirth", ""),
         "expenseFilter": cached.get("expenseFilter", "All"),
         "expenseView": cached.get("expenseView", "overview"),
+        "retirementSimulator": cached.get("retirementSimulator", {}),
         "expenses": load_expenses(connection),
         "expenseCategories": [row["name"] for row in categories],
         "expenseBudgets": {

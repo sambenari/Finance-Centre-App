@@ -23,6 +23,7 @@ const seedState = {
   expenseBudgets: {},
   savingsView: "overview",
   savings: [],
+  retirementSimulator: {},
 };
 
 const demoExpenseKeys = new Set(
@@ -51,7 +52,7 @@ const demoSavingKeys = new Set(
 );
 
 let state = loadState();
-let sessionUnlocked = !state.passwordHash;
+let sessionUnlocked = initialSessionUnlocked(state);
 let databaseAvailable = false;
 let databaseStateLoaded = false;
 let pendingDatabaseSave = null;
@@ -83,7 +84,7 @@ async function hydrateStateFromDatabase() {
     if (payload.state) {
       state = sanitizeLoadedState({ ...structuredClone(seedState), ...payload.state });
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-      sessionUnlocked = !state.passwordHash;
+      sessionUnlocked = sessionUnlocked || initialSessionUnlocked(state);
       render();
       return;
     }
@@ -133,7 +134,24 @@ function passwordHash(password) {
 }
 
 function verifyPassword(password) {
-  return Boolean(state.passwordHash) && passwordHash(password) === state.passwordHash;
+  return passwordMatchesHash(state.passwordHash, password);
+}
+
+function passwordMatchesHash(savedHash, password) {
+  return Boolean(savedHash) && passwordHash(password) === savedHash;
+}
+
+function initialSessionUnlocked(currentState) {
+  if (!currentState.passwordHash) return false;
+  const params = new URLSearchParams(window.location.search);
+  const unlockPassword = params.get("unlockPassword");
+  if (unlockPassword && passwordMatchesHash(currentState.passwordHash, unlockPassword)) {
+    params.delete("unlockPassword");
+    const query = params.toString();
+    window.history.replaceState({}, "", `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`);
+    return true;
+  }
+  return false;
 }
 
 const formatGBP = (value) =>
@@ -697,44 +715,72 @@ function addExpensePage() {
 
 
 function retirementSimulatorPage() {
-  const people = statePensionPeople();
-  const selectedYear = getSelectedMonthDate().getFullYear();
-  const includedPeople = people.filter((person) => person.hasBirthday);
-  const selectedYearIncome = includedPeople.reduce((total, person) => total + statePensionIncomeForYear(person, selectedYear), 0);
-  const steadyStateWeekly = includedPeople.reduce((total, person) => total + person.weeklyAmount, 0);
-  const steadyStateAnnual = steadyStateWeekly * 52;
-  const firstPensionDate = nextStatePensionDate(includedPeople);
+  const model = retirementModel();
+  const settings = model.settings;
 
   return `
-    ${pageHead("Retirement Simulator", "Estimate UK State Pension using saved birthdays and current published rules.", `
+    ${pageHead("Retirement Simulator", "Set assumptions, project pension pot growth, and estimate income sustainability.", `
       <button class="secondary-btn" data-route="settings">Update birthdays</button>
+      <button class="secondary-btn" data-reset-simulator>Reset defaults</button>
     `)}
-    <div class="grid kpi-grid">
-      ${kpi("☂", "People included", String(includedPeople.length), "birthdays saved", "Settings", "blue")}
-      ${kpi("▣", `State Pension income (${selectedYear})`, formatGBP(selectedYearIncome), selectedYearIncome ? "included for selected year" : firstPensionDate ? `starts ${dateLabel(firstPensionDate)}` : "no pension date yet", "date-driven estimate", "green")}
-      ${kpi("↗", "Steady annual full-rate", formatGBP(steadyStateAnnual), "once all included pensions have started", "before tax", "teal")}
-      ${kpi("◎", "Weekly rate basis", formatGBP(UK_STATE_PENSION_WEEKLY_2026_27), "per person per week", UK_STATE_PENSION_TAX_YEAR, "blue")}
-    </div>
-    <div class="grid lower-grid">
-      <article class="card">
-        <div class="card-header"><h2 class="card-title">UK State Pension Estimate</h2><span class="info">i</span></div>
-        ${statePensionTable(people, selectedYear)}
-      </article>
-      <article class="card">
-        <div class="card-header"><h2 class="card-title">Assumptions</h2><span class="info">i</span></div>
-        <div class="progress-list">
-          ${previewRow("Selected report year", String(selectedYear))}
-          ${previewRow("Full new State Pension", `${formatGBP(UK_STATE_PENSION_WEEKLY_2026_27)} / week`)}
-          ${previewRow("Annual full rate", formatGBP(UK_STATE_PENSION_WEEKLY_2026_27 * 52))}
-          ${previewRow("Source basis", `${UK_STATE_PENSION_TAX_YEAR}; ${UK_STATE_PENSION_SOURCE_DATE}`)}
-          ${previewRow("Personal NI record", "Not modelled yet")}
+    <div class="grid lower-grid simulator-layout">
+      <article class="card simulator-parameters">
+        <div class="card-header"><h2 class="card-title">Simulation Parameters</h2><span class="info">i</span></div>
+        ${simulatorSlider("currentAge", "Current Age", settings.currentAge, 18, 80, 1, "")}
+        ${simulatorSlider("retirementAge", "Retirement Age", settings.retirementAge, Math.max(settings.currentAge, 50), 75, 1, "")}
+        ${simulatorSlider("currentPensionPot", "Current Pension Pot", settings.currentPensionPot, 0, 2000000, 1000, "currency")}
+        ${simulatorSlider("monthlyContributions", "Monthly Contributions", settings.monthlyContributions, 0, 10000, 50, "currency")}
+        ${simulatorSlider("growthRate", "Expected Growth Rate", settings.growthRate, 0, 12, 0.1, "percent")}
+        ${simulatorSlider("inflationRate", "Inflation Rate", settings.inflationRate, 0, 10, 0.1, "percent")}
+        ${simulatorSlider("desiredAnnualIncome", "Desired Annual Income", settings.desiredAnnualIncome, 0, 120000, 500, "currency")}
+        ${simulatorSlider("drawdownRate", "Drawdown Rate", settings.drawdownRate, 1, 10, 0.1, "percent")}
+        <div class="simulator-divider"></div>
+        <div class="simulator-toggle-row">
+          <div>
+            <h3 class="card-title compact-title">UK State Pension</h3>
+            <p class="muted small">Full new State Pension rate basis: ${formatGBP(UK_STATE_PENSION_WEEKLY_2026_27)}/week (${UK_STATE_PENSION_TAX_YEAR}).</p>
+          </div>
+          <button class="toggle-button ${settings.includeStatePension ? "active" : ""}" data-sim-toggle="includeStatePension" aria-label="Toggle UK State Pension"><span></span></button>
         </div>
-        <p class="muted small">The 2026 to 2027 figure is used as today's published rate basis, not as an income start year. Income is only counted from each saved State Pension date onward. Your actual amount can be lower or higher depending on your National Insurance record, protected payments, and future law changes.</p>
+        ${simulatorSlider("statePensionAge", "State Pension Age", settings.statePensionAge, 60, 75, 1, "")}
+        ${simulatorSlider("qualifyingNiYears", "Qualifying NI Years", settings.qualifyingNiYears, 0, 35, 1, "ni")}
+        <div class="state-pension-summary">
+          ${previewRow("Annual State Pension", formatGBP(model.statePensionAnnual))}
+          ${previewRow("Monthly", formatGBP(model.statePensionAnnual / 12))}
+          ${previewRow("Weekly", formatGBP(model.statePensionWeekly))}
+          <p class="muted small">Based on ${UK_STATE_PENSION_TAX_YEAR} full rate. Scaled by qualifying NI years and uplifted by inflation in future-year projections.</p>
+        </div>
       </article>
+      <div class="simulator-report-stack">
+        <article class="card sustainability-card">
+          <div class="muted">Pot sustainability</div>
+          <h2 class="sustainability-title">${model.runOutAge ? `Runs out at ${model.runOutAge}` : "Lasts beyond 95"}</h2>
+          <p class="muted">${model.statePensionAnnual ? `State Pension (${formatGBP(model.statePensionAnnual)}/yr) continues after pot depletes` : "No State Pension included in this run"}</p>
+        </article>
+        <article class="card">
+          <div class="card-header"><h2 class="card-title">Retirement Income Breakdown</h2><span class="info">i</span></div>
+          ${retirementIncomeBreakdown(model)}
+        </article>
+        <article class="card">
+          <div class="card-header"><h2 class="card-title">Pension Pot Projection</h2><span class="info">i</span></div>
+          ${pensionProjectionChart(model)}
+        </article>
+        <article class="card readiness-card">
+          <div class="readiness-ring" style="--score:${model.readinessScore}%"><div><strong>${model.readinessScore}</strong><span>/100</span></div></div>
+          <strong class="readiness-label ${model.readinessScore >= 70 ? "good" : model.readinessScore >= 45 ? "medium" : "risk"}">${model.readinessLabel}</strong>
+          <p class="muted">Retirement readiness score</p>
+        </article>
+        <div class="grid kpi-grid simulator-summary-grid">
+          ${kpi("▣", `Pot at retirement (${settings.retirementAge})`, formatGBP(model.potAtRetirement), `In today's money: ${formatGBP(model.realPotAtRetirement)}`, "", "teal")}
+          ${kpi("↗", "Total annual income", formatGBP(model.totalAnnualIncomeAfterState), `${formatGBP(model.privateAnnualIncome)} private + ${formatGBP(model.statePensionAnnual)} state`, "steady-state estimate", "green")}
+          ${kpi("◔", "Income target", formatGBP(settings.desiredAnnualIncome), model.totalAnnualIncomeAfterState >= settings.desiredAnnualIncome ? "Target covered" : `${formatGBP(settings.desiredAnnualIncome - model.totalAnnualIncomeAfterState)} shortfall`, "annual", "blue", model.totalAnnualIncomeAfterState < settings.desiredAnnualIncome)}
+        </div>
+      </div>
     </div>
     ${footerLine()}
   `;
 }
+
 
 function addSavingPage() {
   const editingSaving = state.editingSavingId ? state.savings.find((saving) => saving.id === state.editingSavingId) : null;
@@ -1309,6 +1355,7 @@ function sanitizeLoadedState(loadedState) {
     secondPensionDateOfBirth: loadedState.secondPensionDateOfBirth || "",
     expenses: (loadedState.expenses || []).filter((expense) => !demoExpenseKeys.has(expenseKey(expense))),
     savings: (loadedState.savings || []).filter((saving) => !demoSavingKeys.has(savingKey(saving))),
+    retirementSimulator: loadedState.retirementSimulator || {},
     expenseCategories: loadedState.expenseCategories?.length ? loadedState.expenseCategories : seedState.expenseCategories,
     expenseBudgets: loadedState.expenseBudgets || {},
   };
@@ -1588,6 +1635,200 @@ function goalIcon(goal) {
 }
 
 
+function retirementModel() {
+  const settings = simulatorSettings();
+  const statePensionWeekly = settings.includeStatePension ? UK_STATE_PENSION_WEEKLY_2026_27 * Math.min(settings.qualifyingNiYears, 35) / 35 : 0;
+  const statePensionAnnual = statePensionWeekly * 52;
+  const projection = pensionProjection(settings, statePensionAnnual);
+  const retirementPoint = projection.find((point) => point.age === settings.retirementAge) || projection[0];
+  const privateAnnualIncome = Math.max(0, retirementPoint.nominalPot * (settings.drawdownRate / 100));
+  const totalAnnualIncomeAfterState = privateAnnualIncome + statePensionAnnual;
+  const incomeCoverage = settings.desiredAnnualIncome ? Math.min(totalAnnualIncomeAfterState / settings.desiredAnnualIncome, 1) : 1;
+  const potCoverage = settings.desiredAnnualIncome ? Math.min((retirementPoint.realPot || 0) / Math.max(settings.desiredAnnualIncome * 20, 1), 1) : 1;
+  const contributionScore = settings.retirementAge > settings.currentAge ? Math.min((settings.monthlyContributions * 12 * (settings.retirementAge - settings.currentAge)) / Math.max(settings.desiredAnnualIncome * 10, 1), 1) : 0;
+  const readinessScore = Math.max(0, Math.min(100, Math.round(incomeCoverage * 65 + potCoverage * 25 + contributionScore * 10)));
+
+  return {
+    settings,
+    projection,
+    statePensionWeekly,
+    statePensionAnnual,
+    privateAnnualIncome,
+    totalAnnualIncomeAfterState,
+    potAtRetirement: retirementPoint.nominalPot || 0,
+    realPotAtRetirement: retirementPoint.realPot || 0,
+    runOutAge: projection.find((point) => point.age >= settings.retirementAge && point.nominalPot <= 0)?.age || null,
+    readinessScore,
+    readinessLabel: readinessScore >= 70 ? "On track" : readinessScore >= 45 ? "Needs attention" : "At risk",
+  };
+}
+
+function simulatorSettings() {
+  const defaults = simulatorDefaults();
+  const saved = state.retirementSimulator || {};
+  const settings = {
+    currentAge: numberSetting(saved.currentAge, defaults.currentAge),
+    retirementAge: numberSetting(saved.retirementAge, defaults.retirementAge),
+    currentPensionPot: numberSetting(saved.currentPensionPot, defaults.currentPensionPot),
+    monthlyContributions: numberSetting(saved.monthlyContributions, defaults.monthlyContributions),
+    growthRate: numberSetting(saved.growthRate, defaults.growthRate),
+    inflationRate: numberSetting(saved.inflationRate, defaults.inflationRate),
+    desiredAnnualIncome: numberSetting(saved.desiredAnnualIncome, defaults.desiredAnnualIncome),
+    drawdownRate: numberSetting(saved.drawdownRate, defaults.drawdownRate),
+    includeStatePension: saved.includeStatePension ?? defaults.includeStatePension,
+    statePensionAge: numberSetting(saved.statePensionAge, defaults.statePensionAge),
+    qualifyingNiYears: numberSetting(saved.qualifyingNiYears, defaults.qualifyingNiYears),
+  };
+  settings.currentAge = Math.round(clamp(settings.currentAge, 18, 80));
+  settings.retirementAge = Math.round(clamp(settings.retirementAge, Math.max(settings.currentAge, 50), 75));
+  settings.currentPensionPot = Math.round(clamp(settings.currentPensionPot, 0, 2000000));
+  settings.monthlyContributions = Math.round(clamp(settings.monthlyContributions, 0, 10000));
+  settings.growthRate = roundTo(clamp(settings.growthRate, 0, 12), 1);
+  settings.inflationRate = roundTo(clamp(settings.inflationRate, 0, 10), 1);
+  settings.desiredAnnualIncome = Math.round(clamp(settings.desiredAnnualIncome, 0, 120000));
+  settings.drawdownRate = roundTo(clamp(settings.drawdownRate, 1, 10), 1);
+  settings.statePensionAge = Math.round(clamp(settings.statePensionAge, 60, 75));
+  settings.qualifyingNiYears = Math.round(clamp(settings.qualifyingNiYears, 0, 35));
+  return settings;
+}
+
+function simulatorDefaults() {
+  const currentAge = currentAgeFromDateOfBirth(state.userDateOfBirth) || 30;
+  const calculatedStatePensionAge = statePensionAgeYears(state.userDateOfBirth) || 67;
+  const monthlyRegularSavings = sum(state.savings.filter((saving) => saving.type === "Regular"));
+  return {
+    currentAge,
+    retirementAge: Math.max(calculatedStatePensionAge, currentAge),
+    currentPensionPot: 0,
+    monthlyContributions: monthlyRegularSavings,
+    growthRate: 5,
+    inflationRate: 2,
+    desiredAnnualIncome: 28000,
+    drawdownRate: 4.4,
+    includeStatePension: true,
+    statePensionAge: calculatedStatePensionAge,
+    qualifyingNiYears: 35,
+  };
+}
+
+function pensionProjection(settings, statePensionAnnual) {
+  let pot = settings.currentPensionPot;
+  const points = [];
+  const maxAge = Math.max(95, settings.retirementAge + 20);
+  for (let age = settings.currentAge; age <= maxAge; age += 1) {
+    const yearsFromNow = age - settings.currentAge;
+    const realPot = pot / Math.pow(1 + settings.inflationRate / 100, yearsFromNow);
+    const contributions = age < settings.retirementAge ? settings.monthlyContributions * 12 : 0;
+    const desiredIncome = settings.desiredAnnualIncome * Math.pow(1 + settings.inflationRate / 100, Math.max(0, age - settings.retirementAge));
+    const stateIncome = settings.includeStatePension && age >= settings.statePensionAge ? statePensionAnnual * Math.pow(1 + settings.inflationRate / 100, Math.max(0, age - settings.statePensionAge)) : 0;
+    const drawdown = age >= settings.retirementAge ? Math.max(0, desiredIncome - stateIncome) : 0;
+    points.push({ age, nominalPot: Math.max(0, pot), realPot: Math.max(0, realPot), contributions, drawdown, stateIncome });
+
+    if (age < settings.retirementAge) {
+      pot = (pot + contributions) * (1 + settings.growthRate / 100);
+    } else {
+      pot = Math.max(0, (pot - drawdown) * (1 + settings.growthRate / 100));
+    }
+  }
+  return points;
+}
+
+function simulatorSlider(name, label, value, min, max, step, format) {
+  return `
+    <label class="simulator-slider">
+      <span><span>${label}</span><strong>${simulatorValueLabel(value, format)}</strong></span>
+      <input type="range" min="${min}" max="${max}" step="${step}" value="${value}" data-sim-input="${name}" />
+    </label>
+  `;
+}
+
+function simulatorValueLabel(value, format) {
+  if (format === "currency") return compactGBP(Number(value || 0));
+  if (format === "percent") return `${Number(value || 0).toLocaleString("en-GB", { maximumFractionDigits: 1 })}%`;
+  if (format === "ni") return `${Math.round(value)} of 35`;
+  return String(Math.round(value));
+}
+
+function retirementIncomeBreakdown(model) {
+  const settings = model.settings;
+  const beforeStateAgeEnd = Math.max(settings.retirementAge, settings.statePensionAge - 1);
+  const stateShare = model.totalAnnualIncomeAfterState ? Math.round((model.statePensionAnnual / model.totalAnnualIncomeAfterState) * 100) : 0;
+  return `
+    <div class="income-breakdown-grid">
+      <div class="income-tile"><span>Before State Pension</span><p>Age ${settings.retirementAge}-${beforeStateAgeEnd}</p><strong>${formatGBP(model.privateAnnualIncome)}/yr</strong><small>From private pot only</small></div>
+      <div class="income-tile highlighted"><span>After State Pension</span><p>Age ${settings.statePensionAge}+</p><strong>${formatGBP(model.totalAnnualIncomeAfterState)}/yr</strong><small>${formatGBP(model.privateAnnualIncome)} private + ${formatGBP(model.statePensionAnnual)} state</small></div>
+      <div class="income-tile"><span>Monthly income</span><p>After State Pension</p><strong>${formatGBP(model.totalAnnualIncomeAfterState / 12)}/mo</strong><small>${formatGBP(model.privateAnnualIncome / 12)} + ${formatGBP(model.statePensionAnnual / 12)}</small></div>
+      <div class="income-tile"><span>State Pension share</span><p>Of total income</p><strong>${stateShare}%</strong><small>${formatGBP(model.statePensionAnnual)} of ${formatGBP(model.totalAnnualIncomeAfterState)}</small></div>
+    </div>
+  `;
+}
+
+function pensionProjectionChart(model) {
+  const points = model.projection;
+  const width = 720;
+  const height = 320;
+  const padLeft = 54;
+  const padRight = 18;
+  const padTop = 20;
+  const padBottom = 42;
+  const maxPot = Math.max(...points.map((point) => Math.max(point.nominalPot, point.realPot)), 1);
+  const minAge = points[0]?.age || 0;
+  const maxAge = points[points.length - 1]?.age || minAge + 1;
+  const xFor = (age) => padLeft + ((age - minAge) / Math.max(maxAge - minAge, 1)) * (width - padLeft - padRight);
+  const yFor = (value) => padTop + (1 - value / maxPot) * (height - padTop - padBottom);
+  const pathFor = (field) => points.map((point, index) => `${index ? "L" : "M"}${xFor(point.age).toFixed(1)} ${yFor(point[field]).toFixed(1)}`).join(" ");
+  const retirementX = xFor(model.settings.retirementAge);
+  const yTicks = [1, 0.75, 0.5, 0.25, 0];
+  const ageTicks = points.filter((point) => (point.age - minAge) % 3 === 0 || point.age === maxAge).slice(0, 14);
+
+  return `
+    <div class="projection-legend"><span><i class="legend-dot nominal-dot"></i>Nominal pot</span><span><i class="legend-dot real-dot"></i>Real (today's money)</span><span><i class="legend-dot contribution-dot"></i>Contributions</span></div>
+    <svg class="projection-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Pension pot projection chart">
+      ${yTicks.map((tick) => `<line class="chart-grid-line" x1="${padLeft}" x2="${width - padRight}" y1="${yFor(maxPot * tick)}" y2="${yFor(maxPot * tick)}"></line><text class="chart-axis-label" x="${padLeft - 8}" y="${yFor(maxPot * tick) + 4}" text-anchor="end">${compactGBP(maxPot * tick)}</text>`).join("")}
+      <line class="chart-axis" x1="${padLeft}" x2="${width - padRight}" y1="${height - padBottom}" y2="${height - padBottom}"></line>
+      <line class="chart-axis" x1="${padLeft}" x2="${padLeft}" y1="${padTop}" y2="${height - padBottom}"></line>
+      <path class="projection-path nominal" d="${pathFor("nominalPot")}"></path>
+      <path class="projection-path real" d="${pathFor("realPot")}"></path>
+      <path class="projection-path contributions" d="${pathFor("contributions")}"></path>
+      <line class="retirement-marker" x1="${retirementX}" x2="${retirementX}" y1="${padTop}" y2="${height - padBottom}"></line>
+      ${ageTicks.map((point) => `<text class="chart-axis-label" x="${xFor(point.age)}" y="${height - 16}" text-anchor="middle">${point.age}</text>`).join("")}
+      <text class="chart-axis-title" x="${width / 2}" y="${height - 2}" text-anchor="middle">Age</text>
+    </svg>
+  `;
+}
+
+function currentAgeFromDateOfBirth(dateOfBirth) {
+  const dob = parseDate(dateOfBirth);
+  if (!dob) return 0;
+  const today = new Date();
+  let age = today.getFullYear() - dob.getFullYear();
+  const birthdayThisYear = new Date(today.getFullYear(), dob.getMonth(), dob.getDate());
+  if (today < birthdayThisYear) age -= 1;
+  return Math.max(0, age);
+}
+
+function statePensionAgeYears(dateOfBirth) {
+  const dob = parseDate(dateOfBirth);
+  if (!dob) return 67;
+  const pensionDate = ukStatePensionDate(dob);
+  const label = ageBetweenLabel(dob, pensionDate);
+  return Number(label.split(" ")[0]) || 67;
+}
+
+function numberSetting(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function roundTo(value, decimals) {
+  const factor = 10 ** decimals;
+  return Math.round(value * factor) / factor;
+}
+
 function statePensionPeople() {
   return [
     pensionPerson("You", state.userDateOfBirth),
@@ -1811,6 +2052,36 @@ function bindEvents() {
       saveState();
       render();
     });
+  });
+
+  document.querySelectorAll("[data-sim-input]").forEach((element) => {
+    element.addEventListener("input", () => {
+      state.retirementSimulator = {
+        ...(state.retirementSimulator || {}),
+        [element.dataset.simInput]: Number(element.value),
+      };
+      saveState();
+      render();
+    });
+  });
+
+  document.querySelectorAll("[data-sim-toggle]").forEach((element) => {
+    element.addEventListener("click", () => {
+      const key = element.dataset.simToggle;
+      const current = simulatorSettings()[key];
+      state.retirementSimulator = {
+        ...(state.retirementSimulator || {}),
+        [key]: !current,
+      };
+      saveState();
+      render();
+    });
+  });
+
+  document.querySelector("[data-reset-simulator]")?.addEventListener("click", () => {
+    state.retirementSimulator = {};
+    saveState();
+    render();
   });
 
   document.querySelectorAll("[data-delete-expense]").forEach((element) => {
