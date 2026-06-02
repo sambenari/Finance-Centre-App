@@ -698,33 +698,38 @@ function addExpensePage() {
 
 function retirementSimulatorPage() {
   const people = statePensionPeople();
-  const totalWeekly = people.reduce((total, person) => total + (person.hasBirthday ? UK_STATE_PENSION_WEEKLY_2026_27 : 0), 0);
-  const totalAnnual = totalWeekly * 52;
+  const selectedYear = getSelectedMonthDate().getFullYear();
+  const includedPeople = people.filter((person) => person.hasBirthday);
+  const selectedYearIncome = includedPeople.reduce((total, person) => total + statePensionIncomeForYear(person, selectedYear), 0);
+  const steadyStateWeekly = includedPeople.reduce((total, person) => total + person.weeklyAmount, 0);
+  const steadyStateAnnual = steadyStateWeekly * 52;
+  const firstPensionDate = nextStatePensionDate(includedPeople);
 
   return `
     ${pageHead("Retirement Simulator", "Estimate UK State Pension using saved birthdays and current published rules.", `
       <button class="secondary-btn" data-route="settings">Update birthdays</button>
     `)}
     <div class="grid kpi-grid">
-      ${kpi("☂", "People included", String(people.filter((person) => person.hasBirthday).length), "birthdays saved", "Settings", "blue")}
-      ${kpi("▣", "Weekly State Pension", formatGBP(totalWeekly), `${people.filter((person) => person.hasBirthday).length} full-rate pension${people.filter((person) => person.hasBirthday).length === 1 ? "" : "s"}`, UK_STATE_PENSION_TAX_YEAR, "green")}
-      ${kpi("↗", "Annual estimate", formatGBP(totalAnnual), "before tax", "full new State Pension", "teal")}
-      ${kpi("◎", "Rate basis", formatGBP(UK_STATE_PENSION_WEEKLY_2026_27), "per person per week", UK_STATE_PENSION_TAX_YEAR, "blue")}
+      ${kpi("☂", "People included", String(includedPeople.length), "birthdays saved", "Settings", "blue")}
+      ${kpi("▣", `State Pension income (${selectedYear})`, formatGBP(selectedYearIncome), selectedYearIncome ? "included for selected year" : firstPensionDate ? `starts ${dateLabel(firstPensionDate)}` : "no pension date yet", "date-driven estimate", "green")}
+      ${kpi("↗", "Steady annual full-rate", formatGBP(steadyStateAnnual), "once all included pensions have started", "before tax", "teal")}
+      ${kpi("◎", "Weekly rate basis", formatGBP(UK_STATE_PENSION_WEEKLY_2026_27), "per person per week", UK_STATE_PENSION_TAX_YEAR, "blue")}
     </div>
     <div class="grid lower-grid">
       <article class="card">
         <div class="card-header"><h2 class="card-title">UK State Pension Estimate</h2><span class="info">i</span></div>
-        ${statePensionTable(people)}
+        ${statePensionTable(people, selectedYear)}
       </article>
       <article class="card">
         <div class="card-header"><h2 class="card-title">Assumptions</h2><span class="info">i</span></div>
         <div class="progress-list">
+          ${previewRow("Selected report year", String(selectedYear))}
           ${previewRow("Full new State Pension", `${formatGBP(UK_STATE_PENSION_WEEKLY_2026_27)} / week`)}
           ${previewRow("Annual full rate", formatGBP(UK_STATE_PENSION_WEEKLY_2026_27 * 52))}
           ${previewRow("Source basis", `${UK_STATE_PENSION_TAX_YEAR}; ${UK_STATE_PENSION_SOURCE_DATE}`)}
           ${previewRow("Personal NI record", "Not modelled yet")}
         </div>
-        <p class="muted small">This uses current published UK rules and the full new State Pension rate. Your actual amount can be lower or higher depending on your National Insurance record, protected payments, and future law changes.</p>
+        <p class="muted small">The 2026 to 2027 figure is used as today's published rate basis, not as an income start year. Income is only counted from each saved State Pension date onward. Your actual amount can be lower or higher depending on your National Insurance record, protected payments, and future law changes.</p>
       </article>
     </div>
     ${footerLine()}
@@ -1604,14 +1609,14 @@ function pensionPerson(label, dateOfBirth) {
   };
 }
 
-function statePensionTable(people) {
+function statePensionTable(people, selectedYear) {
   if (!people.some((person) => person.hasBirthday)) {
     return emptyState("No birthdays saved", "Add birthdays in Settings to calculate UK State Pension dates and amounts.");
   }
 
   return `
     <table class="table">
-      <thead><tr><th>Person</th><th>Birthday</th><th>State Pension age</th><th>Pension date</th><th>Annual estimate</th></tr></thead>
+      <thead><tr><th>Person</th><th>Birthday</th><th>State Pension age</th><th>Pension date</th><th>${selectedYear} income</th><th>Annual after start</th></tr></thead>
       <tbody>
         ${people
           .map(
@@ -1621,6 +1626,7 @@ function statePensionTable(people) {
                 <td>${person.dateOfBirth ? dateLabel(person.dateOfBirth) : "Not set"}</td>
                 <td>${person.statePensionAge}</td>
                 <td>${person.statePensionDate ? dateLabel(person.statePensionDate) : "Not set"}</td>
+                <td>${person.hasBirthday ? formatGBP(statePensionIncomeForYear(person, selectedYear)) : "Not included"}</td>
                 <td>${person.hasBirthday ? formatGBP(person.annualAmount) : "Not included"}</td>
               </tr>
             `,
@@ -1629,6 +1635,29 @@ function statePensionTable(people) {
       </tbody>
     </table>
   `;
+}
+
+
+function statePensionIncomeForYear(person, year) {
+  if (!person.hasBirthday || !person.statePensionDate) return 0;
+  const pensionDate = parseDate(person.statePensionDate);
+  const yearStart = new Date(year, 0, 1);
+  const yearEnd = new Date(year, 11, 31);
+  if (!pensionDate || pensionDate > yearEnd) return 0;
+  if (pensionDate <= yearStart) return person.annualAmount;
+
+  const dayMs = 24 * 60 * 60 * 1000;
+  const daysIncluded = Math.max(0, Math.floor((yearEnd - pensionDate) / dayMs) + 1);
+  const weeksIncluded = Math.min(52, Math.ceil(daysIncluded / 7));
+  return person.weeklyAmount * weeksIncluded;
+}
+
+function nextStatePensionDate(people) {
+  const pensionDates = people
+    .map((person) => person.statePensionDate)
+    .filter(Boolean)
+    .sort();
+  return pensionDates[0] || "";
 }
 
 function calculateUKStatePensionDate(dateOfBirth) {
