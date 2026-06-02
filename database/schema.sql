@@ -3,6 +3,7 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS households (
   id INTEGER PRIMARY KEY,
   name TEXT NOT NULL,
+  second_pension_date_of_birth TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -16,6 +17,7 @@ CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY,
   household_id INTEGER NOT NULL REFERENCES households(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
+  date_of_birth TEXT,
   password_hash TEXT NOT NULL DEFAULT '',
   role TEXT NOT NULL CHECK (role IN ('owner', 'editor', 'viewer')),
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP

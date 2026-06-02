@@ -28,6 +28,8 @@ def connect(db_path):
 
 
 def migrate(connection):
+    ensure_column(connection, "households", "second_pension_date_of_birth", "TEXT")
+    ensure_column(connection, "users", "date_of_birth", "TEXT")
     ensure_column(connection, "users", "password_hash", "TEXT NOT NULL DEFAULT ''")
     ensure_column(connection, "expenses", "payment_count", "INTEGER")
     ensure_column(connection, "expenses", "final_payment_date", "TEXT")
@@ -84,25 +86,30 @@ def save_normalized_state(connection, state):
     household_name = text_value(state.get("householdName")) or "My Household"
     user_name = text_value(state.get("userName")) or "User"
     password_hash = text_value(state.get("passwordHash"))
+    user_date_of_birth = text_value(state.get("userDateOfBirth"))
+    second_pension_date_of_birth = text_value(state.get("secondPensionDateOfBirth"))
 
     connection.execute(
         """
-        INSERT INTO households (id, name)
-        VALUES (1, ?)
-        ON CONFLICT(id) DO UPDATE SET name = excluded.name
+        INSERT INTO households (id, name, second_pension_date_of_birth)
+        VALUES (1, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          name = excluded.name,
+          second_pension_date_of_birth = excluded.second_pension_date_of_birth
         """,
-        (household_name,),
+        (household_name, second_pension_date_of_birth),
     )
     connection.execute(
         """
-        INSERT INTO users (id, household_id, name, password_hash, role)
-        VALUES (1, 1, ?, ?, 'owner')
+        INSERT INTO users (id, household_id, name, date_of_birth, password_hash, role)
+        VALUES (1, 1, ?, ?, ?, 'owner')
         ON CONFLICT(id) DO UPDATE SET
           name = excluded.name,
+          date_of_birth = excluded.date_of_birth,
           password_hash = excluded.password_hash,
           role = excluded.role
         """,
-        (user_name, password_hash),
+        (user_name, user_date_of_birth, password_hash),
     )
 
     clear_household_rows(connection, 1)
@@ -247,8 +254,8 @@ def insert_saving(connection, household_id, goal_id, account_id, saving):
 
 def load_normalized_state(connection):
     cached = cached_ui_state(connection)
-    household = connection.execute("SELECT name FROM households WHERE id = 1").fetchone()
-    user = connection.execute("SELECT name, password_hash FROM users WHERE id = 1").fetchone()
+    household = connection.execute("SELECT name, second_pension_date_of_birth FROM households WHERE id = 1").fetchone()
+    user = connection.execute("SELECT name, date_of_birth, password_hash FROM users WHERE id = 1").fetchone()
     categories = connection.execute(
         "SELECT name, monthly_budget_pence FROM expense_categories WHERE household_id = 1 ORDER BY name"
     ).fetchall()
@@ -259,6 +266,8 @@ def load_normalized_state(connection):
         "userName": user["name"] if user else cached.get("userName", ""),
         "householdName": household["name"] if household else cached.get("householdName", ""),
         "passwordHash": user["password_hash"] if user else cached.get("passwordHash", ""),
+        "userDateOfBirth": user["date_of_birth"] if user else cached.get("userDateOfBirth", ""),
+        "secondPensionDateOfBirth": household["second_pension_date_of_birth"] if household else cached.get("secondPensionDateOfBirth", ""),
         "expenseFilter": cached.get("expenseFilter", "All"),
         "expenseView": cached.get("expenseView", "overview"),
         "expenses": load_expenses(connection),

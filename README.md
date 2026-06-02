@@ -8,7 +8,8 @@ A local-first finance centre app for household dashboards, expenses, and savings
 - Expenses section with KPIs, breakdown, trend, upcoming payments, largest expenses, and budget progress
 - Savings section with KPIs, goals, trend, upcoming contributions, accounts, and goal progress
 - Add/edit/delete expense, saving, budget, and category flows that update browser local storage immediately
-- Local password setup, unlock, household settings, and password change
+- Local password setup, unlock, household settings, birthday fields, and password change
+- Retirement simulator with UK State Pension age/date and full-rate estimates from current GOV.UK data
 - Local SQLite persistence through `server.py` and normalized tables in `database/schema.sql`
 
 ## Run

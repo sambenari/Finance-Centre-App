@@ -1,5 +1,8 @@
 const STORAGE_KEY = "control-finance-state-v1";
 const STATE_API_URL = "/api/state";
+const UK_STATE_PENSION_WEEKLY_2026_27 = 241.3;
+const UK_STATE_PENSION_TAX_YEAR = "2026 to 2027";
+const UK_STATE_PENSION_SOURCE_DATE = "GOV.UK published rate checked 2 Jun 2026";
 
 if (window.location.hostname === "localhost") {
   window.location.replace(`http://127.0.0.1:${window.location.port || "4173"}${window.location.pathname}${window.location.hash}`);
@@ -10,6 +13,8 @@ const seedState = {
   month: currentMonthLabel(),
   userName: "",
   householdName: "",
+  userDateOfBirth: "",
+  secondPensionDateOfBirth: "",
   passwordHash: "",
   expenseFilter: "All",
   expenseView: "overview",
@@ -271,6 +276,7 @@ function page() {
   if (state.route === "add-expense") return addExpensePage();
   if (state.route === "add-saving") return addSavingPage();
   if (state.route === "settings") return settingsPage();
+  if (state.route === "retirement") return retirementSimulatorPage();
   return placeholderPage();
 }
 
@@ -321,6 +327,8 @@ function settingsPage() {
         <form id="profile-form" class="form-card">
           ${field("settingsUserName", "User name", "text", state.userName || "", "Your name")}
           ${field("settingsHouseholdName", "Household name", "text", state.householdName || "", "Household name")}
+          ${field("settingsUserDateOfBirth", "Your birthday", "date", state.userDateOfBirth || "")}
+          ${field("settingsSecondPensionDateOfBirth", "Second pension birthday", "date", state.secondPensionDateOfBirth || "")}
           <button type="button" class="primary-btn" data-save-profile>Save household</button>
         </form>
       </article>
@@ -683,6 +691,42 @@ function addExpensePage() {
         </article>
       </aside>
     </form>
+    ${footerLine()}
+  `;
+}
+
+
+function retirementSimulatorPage() {
+  const people = statePensionPeople();
+  const totalWeekly = people.reduce((total, person) => total + (person.hasBirthday ? UK_STATE_PENSION_WEEKLY_2026_27 : 0), 0);
+  const totalAnnual = totalWeekly * 52;
+
+  return `
+    ${pageHead("Retirement Simulator", "Estimate UK State Pension using saved birthdays and current published rules.", `
+      <button class="secondary-btn" data-route="settings">Update birthdays</button>
+    `)}
+    <div class="grid kpi-grid">
+      ${kpi("☂", "People included", String(people.filter((person) => person.hasBirthday).length), "birthdays saved", "Settings", "blue")}
+      ${kpi("▣", "Weekly State Pension", formatGBP(totalWeekly), `${people.filter((person) => person.hasBirthday).length} full-rate pension${people.filter((person) => person.hasBirthday).length === 1 ? "" : "s"}`, UK_STATE_PENSION_TAX_YEAR, "green")}
+      ${kpi("↗", "Annual estimate", formatGBP(totalAnnual), "before tax", "full new State Pension", "teal")}
+      ${kpi("◎", "Rate basis", formatGBP(UK_STATE_PENSION_WEEKLY_2026_27), "per person per week", UK_STATE_PENSION_TAX_YEAR, "blue")}
+    </div>
+    <div class="grid lower-grid">
+      <article class="card">
+        <div class="card-header"><h2 class="card-title">UK State Pension Estimate</h2><span class="info">i</span></div>
+        ${statePensionTable(people)}
+      </article>
+      <article class="card">
+        <div class="card-header"><h2 class="card-title">Assumptions</h2><span class="info">i</span></div>
+        <div class="progress-list">
+          ${previewRow("Full new State Pension", `${formatGBP(UK_STATE_PENSION_WEEKLY_2026_27)} / week`)}
+          ${previewRow("Annual full rate", formatGBP(UK_STATE_PENSION_WEEKLY_2026_27 * 52))}
+          ${previewRow("Source basis", `${UK_STATE_PENSION_TAX_YEAR}; ${UK_STATE_PENSION_SOURCE_DATE}`)}
+          ${previewRow("Personal NI record", "Not modelled yet")}
+        </div>
+        <p class="muted small">This uses current published UK rules and the full new State Pension rate. Your actual amount can be lower or higher depending on your National Insurance record, protected payments, and future law changes.</p>
+      </article>
+    </div>
     ${footerLine()}
   `;
 }
@@ -1256,6 +1300,8 @@ function sanitizeLoadedState(loadedState) {
     userName: loadedState.userName === "James" ? "" : loadedState.userName || "",
     householdName: loadedState.householdName || "",
     passwordHash: loadedState.passwordHash || "",
+    userDateOfBirth: loadedState.userDateOfBirth || "",
+    secondPensionDateOfBirth: loadedState.secondPensionDateOfBirth || "",
     expenses: (loadedState.expenses || []).filter((expense) => !demoExpenseKeys.has(expenseKey(expense))),
     savings: (loadedState.savings || []).filter((saving) => !demoSavingKeys.has(savingKey(saving))),
     expenseCategories: loadedState.expenseCategories?.length ? loadedState.expenseCategories : seedState.expenseCategories,
@@ -1536,6 +1582,146 @@ function goalIcon(goal) {
   }[goal] || "♧";
 }
 
+
+function statePensionPeople() {
+  return [
+    pensionPerson("You", state.userDateOfBirth),
+    pensionPerson("Second pension", state.secondPensionDateOfBirth),
+  ];
+}
+
+function pensionPerson(label, dateOfBirth) {
+  const statePensionDate = calculateUKStatePensionDate(dateOfBirth);
+  const hasBirthday = Boolean(dateOfBirth && statePensionDate);
+  return {
+    label,
+    dateOfBirth,
+    hasBirthday,
+    statePensionDate,
+    statePensionAge: hasBirthday ? statePensionAgeLabel(dateOfBirth) : "Not set",
+    weeklyAmount: hasBirthday ? UK_STATE_PENSION_WEEKLY_2026_27 : 0,
+    annualAmount: hasBirthday ? UK_STATE_PENSION_WEEKLY_2026_27 * 52 : 0,
+  };
+}
+
+function statePensionTable(people) {
+  if (!people.some((person) => person.hasBirthday)) {
+    return emptyState("No birthdays saved", "Add birthdays in Settings to calculate UK State Pension dates and amounts.");
+  }
+
+  return `
+    <table class="table">
+      <thead><tr><th>Person</th><th>Birthday</th><th>State Pension age</th><th>Pension date</th><th>Annual estimate</th></tr></thead>
+      <tbody>
+        ${people
+          .map(
+            (person) => `
+              <tr>
+                <td>${person.label}</td>
+                <td>${person.dateOfBirth ? dateLabel(person.dateOfBirth) : "Not set"}</td>
+                <td>${person.statePensionAge}</td>
+                <td>${person.statePensionDate ? dateLabel(person.statePensionDate) : "Not set"}</td>
+                <td>${person.hasBirthday ? formatGBP(person.annualAmount) : "Not included"}</td>
+              </tr>
+            `,
+          )
+          .join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+function calculateUKStatePensionDate(dateOfBirth) {
+  const dob = parseDate(dateOfBirth);
+  if (!dob) return "";
+  return toISODate(ukStatePensionDate(dob));
+}
+
+function statePensionAgeLabel(dateOfBirth) {
+  const dob = parseDate(dateOfBirth);
+  if (!dob) return "Not set";
+  const pensionDate = ukStatePensionDate(dob);
+  return ageBetweenLabel(dob, pensionDate);
+}
+
+function ukStatePensionDate(dob) {
+  const transition66Start = localDate(1960, 4, 6);
+  const transition66End = localDate(1961, 3, 5);
+  const age67Start = localDate(1961, 3, 6);
+  const transition68Start = localDate(1977, 4, 6);
+  const transition68End = localDate(1978, 4, 5);
+
+  if (dob < transition66Start) return addYearsClamped(dob, 66);
+  if (dob <= transition66End) return addMonthsClamped(dob, 66 * 12 + transitionExtraMonths(dob, 1960, 4));
+  if (dob >= age67Start && dob < transition68Start) return addYearsClamped(dob, 67);
+  if (dob <= transition68End) return transition68PensionDate(dob);
+  return addYearsClamped(dob, 68);
+}
+
+function transition68PensionDate(dob) {
+  const pensionDates = [
+    localDate(2044, 5, 6),
+    localDate(2044, 7, 6),
+    localDate(2044, 9, 6),
+    localDate(2044, 11, 6),
+    localDate(2045, 1, 6),
+    localDate(2045, 3, 6),
+    localDate(2045, 5, 6),
+    localDate(2045, 7, 6),
+    localDate(2045, 9, 6),
+    localDate(2045, 11, 6),
+    localDate(2046, 1, 6),
+    localDate(2046, 3, 6),
+  ];
+
+  for (let monthOffset = 0; monthOffset < pensionDates.length; monthOffset += 1) {
+    const rangeStart = localDate(1977, 4 + monthOffset, 6);
+    const rangeEnd = localDate(1977, 4 + monthOffset + 1, 5);
+    if (dob >= rangeStart && dob <= rangeEnd) return pensionDates[monthOffset];
+  }
+  return addYearsClamped(dob, 68);
+}
+
+function transitionExtraMonths(dob, startYear, startMonth) {
+  for (let monthOffset = 0; monthOffset < 11; monthOffset += 1) {
+    const rangeStart = localDate(startYear, startMonth + monthOffset, 6);
+    const rangeEnd = localDate(startYear, startMonth + monthOffset + 1, 5);
+    if (dob >= rangeStart && dob <= rangeEnd) return monthOffset + 1;
+  }
+  return 0;
+}
+
+function addYearsClamped(date, years) {
+  return addMonthsClamped(date, years * 12);
+}
+
+function addMonthsClamped(date, months) {
+  const targetYear = date.getFullYear();
+  const targetMonth = date.getMonth() + months;
+  const lastDay = new Date(targetYear, targetMonth + 1, 0).getDate();
+  return new Date(targetYear, targetMonth, Math.min(date.getDate(), lastDay));
+}
+
+function ageBetweenLabel(startDate, endDate) {
+  let years = endDate.getFullYear() - startDate.getFullYear();
+  let months = endDate.getMonth() - startDate.getMonth();
+  let days = endDate.getDate() - startDate.getDate();
+
+  if (days < 0) {
+    months -= 1;
+  }
+  if (months < 0) {
+    years -= 1;
+    months += 12;
+  }
+
+  return months ? `${years} years ${months} months` : `${years} years`;
+}
+
+function localDate(year, monthNumber, day) {
+  return new Date(year, monthNumber - 1, day);
+}
+
 function dateLabel(date) {
   if (!date) return "No date";
   const parsedDate = new Date(date);
@@ -1787,6 +1973,8 @@ function bindEvents() {
     const data = Object.fromEntries(new FormData(form).entries());
     state.userName = String(data.settingsUserName || "User").trim() || "User";
     state.householdName = String(data.settingsHouseholdName || "My Household").trim() || "My Household";
+    state.userDateOfBirth = data.settingsUserDateOfBirth || "";
+    state.secondPensionDateOfBirth = data.settingsSecondPensionDateOfBirth || "";
     saveState();
     render();
   });
